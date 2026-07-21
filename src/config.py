@@ -24,16 +24,14 @@ _load_dotenv()
 
 @dataclass(frozen=True)
 class Config:
-    anthropic_api_key: str
+    openai_api_key: str
     agent_model: str
-    planner_model: str
 
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
-            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            agent_model=os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001"),
-            planner_model=os.environ.get("PLANNER_MODEL", "claude-haiku-4-5-20251001"),
+            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+            agent_model=os.environ.get("AGENT_MODEL", "gpt-4o-mini"),
         )
 
 

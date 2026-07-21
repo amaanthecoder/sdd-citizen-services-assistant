@@ -84,10 +84,9 @@ python run.py --once "I lost my black wallet near Al Majaz yesterday" --trace
 `.env` supports:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-AGENT_MODEL=claude-haiku-4-5-20251001    # default; cheap and adequate
-PLANNER_MODEL=claude-haiku-4-5-20251001  # currently unused (stretch)
+OPENAI_API_KEY=sk-...
+AGENT_MODEL=gpt-4o-mini    # default; cheap and adequate for this workload
 ```
 
-You can point `AGENT_MODEL` at a Sonnet or Opus build for a quality/cost
-trade-off — see the cost delta discussion in `REPORT.md`.
+You can point `AGENT_MODEL` at `gpt-4o`, `gpt-4.1`, or `gpt-4.1-mini` for a
+quality/cost trade-off — see the cost delta discussion in `REPORT.md`.

@@ -8,8 +8,8 @@ Architecture (single-agent, deliberately):
        ↓
     [wrap]       message wrapped in <untrusted_citizen_input> tags
        ↓
-    [LLM loop]   Claude with tool schemas — plans and calls tools
-       ↓          each tool_use goes through [execute_tool] which:
+    [LLM loop]   OpenAI Chat Completions with tool calling
+       ↓          each tool_call goes through [execute_tool] which:
        ↓            - enforces same-turn authorization for pay_fine
        ↓            - converts exceptions into structured error results
        ↓          the LLM decides retries/fallbacks per system-prompt rules
@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from anthropic import Anthropic
+from openai import OpenAI
 
 from .config import CONFIG
 from .guardrails import (
@@ -62,18 +62,20 @@ from .tools import (
 # so anyone reading the code can see what "cost" numbers in the eval mean.
 # ---------------------------------------------------------------------------
 _PRICING_USD_PER_MTOK = {
-    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
-    "claude-opus-4-7": {"input": 15.00, "output": 75.00},
+    # OpenAI list prices (input / output per 1M tokens)
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4o": {"input": 2.50, "output": 10.00},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
 }
 
 
 def _price_for(model: str) -> dict[str, float]:
-    # Best-effort match on the base model family
+    # Best-effort match on model family prefix
     for k, v in _PRICING_USD_PER_MTOK.items():
-        if model.startswith(k) or k in model:
+        if model.startswith(k):
             return v
-    return {"input": 3.00, "output": 15.00}
+    return {"input": 1.00, "output": 4.00}
 
 
 # ---------------------------------------------------------------------------
@@ -110,12 +112,12 @@ class Agent:
     MAX_TOOL_ITERATIONS = 8
 
     def __init__(self, model: str | None = None):
-        if not CONFIG.anthropic_api_key:
+        if not CONFIG.openai_api_key:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and set it."
+                "OPENAI_API_KEY is not set. Copy .env.example to .env and set it."
             )
         self.model = model or CONFIG.agent_model
-        self.client = Anthropic(api_key=CONFIG.anthropic_api_key)
+        self.client = OpenAI(api_key=CONFIG.openai_api_key)
 
     # ---- main entry ------------------------------------------------------
 
@@ -127,9 +129,9 @@ class Agent:
     ) -> TurnResult:
         """Handle one citizen turn. Returns TurnResult with trace + metrics.
 
-        `history` may be a prior conversation list-of-messages (Anthropic
-        format) to support multi-turn confirmation flows. If None, starts
-        fresh — which is what the evaluation harness uses.
+        `history` may be a prior conversation list-of-messages (OpenAI format)
+        to support multi-turn confirmation flows. If None, starts fresh —
+        which is what the evaluation harness uses.
         `seed` seeds the tool RNG for reproducibility.
         """
         start_ts = time.perf_counter()
@@ -164,7 +166,10 @@ class Agent:
                 + wrapped
             )
 
-        messages = list(history or [])
+        # OpenAI messages format
+        messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if history:
+            messages.extend(history)
         messages.append({"role": "user", "content": wrapped})
 
         # --- 3. LLM tool-use loop -----------------------------------------
@@ -174,74 +179,92 @@ class Agent:
         final_text = ""
 
         for iteration in range(self.MAX_TOOL_ITERATIONS):
-            resp = self.client.messages.create(
+            resp = self.client.chat.completions.create(
                 model=self.model,
-                system=SYSTEM_PROMPT,
-                tools=TOOL_SCHEMAS,
                 messages=messages,
-                max_tokens=2048,
+                tools=TOOL_SCHEMAS,
                 temperature=0,
+                max_tokens=2048,
             )
             llm_calls += 1
-            total_in += resp.usage.input_tokens
-            total_out += resp.usage.output_tokens
+            if resp.usage:
+                total_in += resp.usage.prompt_tokens
+                total_out += resp.usage.completion_tokens
+
+            choice = resp.choices[0]
+            msg = choice.message
 
             trace.append(
                 TraceStep(
                     "llm_call",
                     {
                         "iteration": iteration,
-                        "stop_reason": resp.stop_reason,
-                        "input_tokens": resp.usage.input_tokens,
-                        "output_tokens": resp.usage.output_tokens,
+                        "finish_reason": choice.finish_reason,
+                        "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+                        "output_tokens": resp.usage.completion_tokens if resp.usage else 0,
                     },
                 )
             )
 
-            # Append assistant message (needed for follow-up tool_result msgs)
-            messages.append({"role": "assistant", "content": resp.content})
+            # Serialize the assistant message back into messages so the model
+            # can see its own tool_calls when we append tool results.
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+            if msg.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            messages.append(assistant_msg)
 
-            if resp.stop_reason == "end_turn":
-                final_text = _extract_text(resp.content)
+            # No tool calls => we're done
+            if not msg.tool_calls:
+                final_text = (msg.content or "").strip()
                 break
 
-            if resp.stop_reason == "tool_use":
-                tool_results = []
-                for block in resp.content:
-                    if block.type != "tool_use":
-                        continue
+            # Execute each tool call and append tool result messages
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError as e:
+                    args = {}
+                    result_content, is_error, refusal = (
+                        json.dumps({"error": "BAD_ARGUMENTS", "message": str(e)}),
+                        True,
+                        None,
+                    )
+                else:
                     result_content, is_error, refusal = _execute_tool(
-                        block.name,
-                        block.input,
+                        tc.function.name,
+                        args,
                         latest_user_message=user_message,
                     )
-                    trace.append(
-                        TraceStep(
-                            "tool_call",
-                            {
-                                "name": block.name,
-                                "args": block.input,
-                                "is_error": is_error,
-                                "result_preview": _preview(result_content),
-                            },
-                        )
-                    )
-                    if refusal:
-                        refusals.append(refusal)
-                    tool_results.append(
+                trace.append(
+                    TraceStep(
+                        "tool_call",
                         {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_content,
+                            "name": tc.function.name,
+                            "args": args,
                             "is_error": is_error,
-                        }
+                            "result_preview": _preview(result_content),
+                        },
                     )
-                messages.append({"role": "user", "content": tool_results})
-                continue
-
-            # Any other stop_reason: bail with whatever text we have
-            final_text = _extract_text(resp.content) or "(no response)"
-            break
+                )
+                if refusal:
+                    refusals.append(refusal)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result_content,
+                    }
+                )
         else:
             final_text = (
                 "I hit an internal iteration limit while handling your request. "
@@ -284,14 +307,6 @@ class Agent:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _extract_text(content_blocks: list[Any]) -> str:
-    out = []
-    for b in content_blocks:
-        if getattr(b, "type", None) == "text":
-            out.append(b.text)
-    return "\n".join(out).strip()
-
-
 def _preview(x: Any, limit: int = 200) -> str:
     s = x if isinstance(x, str) else json.dumps(x, ensure_ascii=False, default=str)
     return s[:limit] + ("…" if len(s) > limit else "")
