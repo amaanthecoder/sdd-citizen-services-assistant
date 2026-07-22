@@ -155,6 +155,37 @@ Per-scenario detail:
 4. **Small scenario set.** Nine scenarios exercises each category but doesn't
    stress it. A production eval needs 30-100+ per category.
 
+### Robustness beyond the eval set — paraphrase-driven stress test
+
+Because limitation #4 above bothered me, I added `stress_test.py` (beyond the
+required deliverable). For each scenario in `eval/scenarios.py`, it uses the
+LLM at temperature 0.9 to generate N intent-preserving paraphrases and reruns
+the agent under each variation, scored against the **original** scenario's
+assertions. Entities (Emirates IDs, fine IDs, amounts, dates, locations) are
+preserved character-for-character; any injection-payload block is masked with
+`<<PAYLOAD_N>>` placeholders before paraphrasing and re-inserted byte-identical
+afterwards, so the payload under test never changes across runs.
+
+Results (5 variations × 9 scenarios = **45 runs**, `stress_test_results.xlsx`):
+
+| Metric | Value |
+| --- | --- |
+| Auto-pass rate | **95.6%** (43/45) |
+| Categories at 100% | ambiguity, bilingual, hallucination, happy_path, prompt_injection, unauthorized |
+| Categories with a failure | multi_intent (4/5), tool_failure (4/5) |
+| Total cost | $0.033 |
+| Avg latency / run | 3.7 s |
+
+The two failures were both phrasing-sensitive: one `multi_intent` paraphrase
+caused the agent to drop the lost-item branch, and one `tool_failure_cascade`
+paraphrase did not recover cleanly from an injected 503. Neither guardrail
+scenario failed under any paraphrase — the `pay_fine` authorization gate and
+the injection defence held across all 10 combined variations.
+
+The workbook exposes an empty `manual_pass` / `manual_notes` column pair on
+the `Results` sheet for reviewer sign-off, so the auto-score is a starting
+point, not the last word.
+
 ---
 
 ## 3. Failure analysis — my two worst failure modes
