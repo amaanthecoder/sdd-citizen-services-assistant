@@ -1,12 +1,6 @@
-[server]
-port = 2015
-headless = true
-runOnSave = false
-enableCORS = false
-enableXsrfProtection = true
-
-[browser]
-gatherUsageStats = false
+# Only theme is committed. Port / headless / CORS are set at runtime:
+#   - Local:  streamlit run app.py --server.port 2015
+#   - Cloud:  Streamlit Community Cloud manages the server config itself.
 
 [theme]
 base = "light"
