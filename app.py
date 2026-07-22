@@ -13,10 +13,24 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import time
 from pathlib import Path
 
 import streamlit as st
+
+# Streamlit Cloud injects secrets via st.secrets, but src/config.py reads
+# from os.environ (populated by .env locally). Bridge the two so the same
+# code path works in both environments. Must run BEFORE importing src.config,
+# which snapshots os.environ at import time.
+try:
+    for _key in ("OPENAI_API_KEY", "AGENT_MODEL"):
+        if _key in st.secrets and not os.environ.get(_key):
+            os.environ[_key] = str(st.secrets[_key])
+except Exception:
+    # No secrets.toml configured (e.g. local run without secrets file).
+    # Fall through to .env / process env.
+    pass
 
 from src.agent import Agent
 from src.config import CONFIG
