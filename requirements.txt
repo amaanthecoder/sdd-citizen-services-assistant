@@ -1,1 +1,9 @@
+# Core — needed to run the agent and the eval harness.
 openai>=1.50.0
+
+# Optional extras — only needed for scripts beyond the graded surface.
+#   stress_test.py       requires pandas + openpyxl
+#   app.py (demo UI)     requires streamlit
+pandas>=2.0.0
+openpyxl>=3.1.0
+streamlit>=1.28.0

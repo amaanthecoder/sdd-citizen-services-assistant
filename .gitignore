@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+
+# Excel lockfiles (created while the workbook is open in Excel/Numbers)
+~$*.xlsx
+~$*.xls
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
